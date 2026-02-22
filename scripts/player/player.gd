@@ -105,11 +105,14 @@ func _end_dash() -> void:
 	_can_dash = true
 
 func _handle_attack() -> void:
-	if Input.is_action_just_pressed("attack") and _can_attack:
-		_perform_attack()
+	if Input.is_action_just_pressed("attack"):
+		print("Attack pressed! can_attack: ", _can_attack)
+		if _can_attack:
+			_perform_attack()
 
 func _perform_attack() -> void:
 	_can_attack = false
+	print("Performing attack!")
 	_detect_enemies()
 	await get_tree().create_timer(attack_cooldown).timeout
 	_can_attack = true
@@ -121,13 +124,15 @@ func _detect_enemies() -> void:
 	var space_state = get_world_2d().direct_space_state
 	var query = PhysicsPointQueryParameters2D.new()
 	query.position = attack_point.global_position
-	query.collide_with_areas = true
+	query.collide_with_bodies = true
 	query.collision_mask = 4
 	
 	var results = space_state.intersect_point(query, 10)
 	
+	print("Attack detected ", results.size(), " objects")
 	for result in results:
 		var collider = result["collider"]
+		print("Hit: ", collider.name)
 		if collider.has_method("take_damage"):
 			collider.take_damage(attack_damage)
 

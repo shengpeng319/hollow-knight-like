@@ -26,7 +26,13 @@ var _patrol_direction: int = 1
 var _start_position: Vector2
 var _player: Node2D = null
 
-@onready var _sprite: Sprite2D = $Sprite2D if has_node("Sprite2D") else null
+@onready var _sprite: Node2D = $EnemySprite if has_node("EnemySprite") else null
+
+func _ready() -> void:
+	_current_health = max_health
+	_start_position = global_position
+	_patrol_direction = 1 if randf() > 0.5 else -1
+	print("Enemy ready! Health: ", _current_health)
 
 func _ready() -> void:
 	_current_health = max_health
