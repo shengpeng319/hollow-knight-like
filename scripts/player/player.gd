@@ -22,6 +22,11 @@ signal player_died
 @export var invincibility_duration: float = 1.0
 @export var knockback_force: float = 300.0
 
+# Attack animation
+@export_group("Animation Settings")
+@export var attack_animation_speed: float = 0.15
+@export var slash_arc_degrees: float = 120.0
+
 var _current_health: int
 var _current_jumps: int = 0
 var _can_dash: bool = true
@@ -29,12 +34,18 @@ var _is_dashing: bool = false
 var _dash_time: float = 0.0
 var _dash_duration: float = 0.2
 var _can_attack: bool = true
+var _is_attacking: bool = false
 var _is_invincible: bool = false
 var _facing_right: bool = true
 var _start_position: Vector2
+var _current_attack_dir: int = 0  # 0=horizontal, 1=up, -1=down
+
+# Attack slash sprite
+var _slash_sprite: Sprite2D = null
 
 @onready var _gravity: float = ProjectSettings.get_setting("physics/2d/default_gravity")
-@onready var _sprite: Node2D = $PlayerSprite if has_node("PlayerSprite") else null
+@onready var _sprite: Node = $PlayerSprite if has_node("PlayerSprite") else null
+@onready var _attack_area: Area2D = $AttackArea if has_node("AttackArea") else null
 
 func _ready() -> void:
 	_current_health = max_health
@@ -57,8 +68,6 @@ func _physics_process(delta: float) -> void:
 
 func _handle_input() -> void:
 	velocity.x = Input.get_axis("move_left", "move_right") * move_speed
-	if Input.is_action_pressed("move_left") or Input.is_action_pressed("move_right"):
-		print("Moving: ", velocity.x)
 
 func _move() -> void:
 	move_and_slide()
@@ -66,10 +75,12 @@ func _move() -> void:
 func _apply_gravity(delta: float) -> void:
 	if not is_on_floor():
 		velocity.y += _gravity * delta
+	else:
+		if _current_jumps > 0:
+			_current_jumps = 0
 
 func _handle_jump() -> void:
 	if Input.is_action_just_pressed("jump"):
-		print("Jump pressed! on_floor: ", is_on_floor(), " jumps: ", _current_jumps)
 		if is_on_floor():
 			_perform_jump()
 		elif _current_jumps < max_jumps - 1:
@@ -81,7 +92,6 @@ func _perform_jump() -> void:
 
 func _handle_dash() -> void:
 	if Input.is_action_just_pressed("dash"):
-		print("Dash pressed! can_dash: ", _can_dash, " velocity.x: ", velocity.x)
 		if _can_dash and velocity.x != 0:
 			_start_dash()
 
@@ -106,35 +116,131 @@ func _end_dash() -> void:
 
 func _handle_attack() -> void:
 	if Input.is_action_just_pressed("attack"):
-		print("Attack pressed! can_attack: ", _can_attack)
-		if _can_attack:
+		if _can_attack and not _is_attacking:
 			_perform_attack()
 
 func _perform_attack() -> void:
 	_can_attack = false
-	print("Performing attack!")
+	_is_attacking = true
+	
+	# Determine attack direction
+	_current_attack_dir = 0
+	if Input.is_action_pressed("move_up"):
+		_current_attack_dir = 1
+	elif Input.is_action_pressed("move_down"):
+		_current_attack_dir = -1
+	
+	print("Attack! Direction: ", _current_attack_dir, " facing: ", _facing_right)
+	
+	# Player color flash
+	if _sprite:
+		_sprite.modulate = Color(1, 1, 1, 1)
+	
+	# Show slash animation
+	_create_slash_effect()
+	
+	# Detect enemies
 	_detect_enemies()
+	
+	# Wait for animation
+	await get_tree().create_timer(attack_animation_speed).timeout
+	
+	# Reset sprite color
+	if _sprite:
+		_sprite.modulate = Color(0.2, 0.6, 1, 1)
+	
+	# Wait for cooldown
 	await get_tree().create_timer(attack_cooldown).timeout
 	_can_attack = true
+	_is_attacking = false
+
+func _create_slash_effect() -> void:
+	# Remove old slash if exists
+	if _slash_sprite and is_instance_valid(_slash_sprite):
+		_slash_sprite.queue_free()
+		await get_tree().process_frame
+	
+	# Create slash as a rectangle
+	_slash_sprite = Sprite2D.new()
+	_slash_sprite.texture = _generate_slash_texture()
+	_slash_sprite.modulate = Color(1, 1, 1, 0.9)
+	
+	# Position and rotate based on attack direction
+	var offset = Vector2.ZERO
+	var rotation = 0.0
+	
+	match _current_attack_dir:
+		0:  # Horizontal slash - right or left
+			offset = Vector2(30 * (1 if _facing_right else -1), 0)
+			rotation = 0.0
+		1:  # Up slash
+			offset = Vector2(0, -30)
+			rotation = deg_to_rad(-90)
+		-1:  # Down slash
+			offset = Vector2(0, 30)
+			rotation = deg_to_rad(90)
+	
+	_slash_sprite.position = offset
+	_slash_sprite.rotation = rotation
+	add_child(_slash_sprite)
+	
+	# Animate fade out
+	var tween = create_tween()
+	tween.tween_property(_slash_sprite, "modulate:a", 0.0, attack_animation_speed)
+	tween.tween_callback(_clear_slash_sprite)
+
+func _generate_slash_texture() -> ImageTexture:
+	var width = 30
+	var height = 5
+	
+	var img = Image.create(width, height, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	
+	# Draw white rectangle
+	for x in range(width):
+		for y in range(height):
+			img.set_pixel(x, y, Color(1, 1, 1, 0.9))
+	
+	return ImageTexture.create_from_image(img)
+
+func _clear_slash_sprite() -> void:
+	if _slash_sprite and is_instance_valid(_slash_sprite):
+		_slash_sprite.queue_free()
+	_slash_sprite = null
 
 func _detect_enemies() -> void:
-	if not attack_point:
-		return
+	var direction = 1 if _facing_right else -1
+	var attack_offset = Vector2.ZERO
+	var attack_shape = RectangleShape2D.new()
 	
-	var space_state = get_world_2d().direct_space_state
-	var query = PhysicsPointQueryParameters2D.new()
-	query.position = attack_point.global_position
-	query.collide_with_bodies = true
-	query.collision_mask = 4
+	match _current_attack_dir:
+		0:  # Horizontal
+			attack_offset = Vector2(direction * 30, 0)
+			attack_shape.size = Vector2(35, 10)
+		1:  # Up
+			attack_offset = Vector2(0, -30)
+			attack_shape.size = Vector2(10, 35)
+		-1:  # Down
+			attack_offset = Vector2(0, 30)
+			attack_shape.size = Vector2(10, 35)
 	
-	var results = space_state.intersect_point(query, 10)
-	
-	print("Attack detected ", results.size(), " objects")
-	for result in results:
-		var collider = result["collider"]
-		print("Hit: ", collider.name)
-		if collider.has_method("take_damage"):
-			collider.take_damage(attack_damage)
+	# Update attack area position and shape
+	if _attack_area:
+		_attack_area.global_position = global_position + attack_offset
+		
+		# Update collision shape
+		var collision_shape = _attack_area.get_node_or_null("CollisionShape2D")
+		if collision_shape:
+			collision_shape.shape = attack_shape
+		
+		# Get overlapping bodies
+		var bodies = _attack_area.get_overlapping_bodies()
+		print("Attack detected ", bodies.size(), " bodies in direction ", _current_attack_dir)
+		
+		for body in bodies:
+			print("Hit: ", body.name)
+			if body.has_method("take_damage"):
+				body.take_damage(attack_damage)
 
 func _flip_sprite() -> void:
 	if velocity.x > 0 and not _facing_right:
@@ -152,6 +258,8 @@ func take_damage(damage: float) -> void:
 	_current_health = max(0, _current_health)
 	health_changed.emit(_current_health, max_health)
 	
+	print("Player took damage! Health: ", _current_health)
+	
 	if _current_health <= 0:
 		_die()
 	else:
@@ -164,8 +272,17 @@ func _apply_knockback() -> void:
 
 func _start_invincibility() -> void:
 	_is_invincible = true
+	# Flash effect
+	if _sprite:
+		var tween = create_tween()
+		for i in range(5):
+			tween.tween_property(_sprite, "modulate:a", 0.3, 0.1)
+			tween.tween_property(_sprite, "modulate:a", 1.0, 0.1)
+	
 	await get_tree().create_timer(invincibility_duration).timeout
 	_is_invincible = false
+	if _sprite:
+		_sprite.modulate.a = 1.0
 
 func _die() -> void:
 	set_physics_process(false)
@@ -184,3 +301,6 @@ func _respawn() -> void:
 func heal(amount: int) -> void:
 	_current_health = min(_current_health + amount, max_health)
 	health_changed.emit(_current_health, max_health)
+
+func get_max_health() -> int:
+	return max_health

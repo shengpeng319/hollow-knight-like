@@ -1,13 +1,17 @@
-[gd_scene load_steps=5 format=3 uid="uid://main_scene"]
+[gd_scene load_steps=7 format=3 uid="uid://main_scene"]
 
 [ext_resource type="Script" path="res://scripts/player/player.gd" id="1_player"]
 [ext_resource type="Script" path="res://scripts/ui/ui_manager.gd" id="2_ui"]
+[ext_resource type="Script" path="res://scripts/enemy/enemy.gd" id="3_enemy"]
 
 [sub_resource type="CircleShape2D" id="CircleShape2D"]
 radius = 16.0
 
 [sub_resource type="RectangleShape2D" id="GroundShape"]
 size = Vector2(1280, 50)
+
+[sub_resource type="RectangleShape2D" id="AttackShape"]
+size = Vector2(80, 50)
 
 [node name="Main" type="Node2D"]
 
@@ -23,6 +27,8 @@ color = Color(0.1, 0.15, 0.2, 1)
 
 [node name="Ground" type="StaticBody2D" parent="."]
 position = Vector2(640, 650)
+collision_layer = 1
+collision_mask = 3
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="Ground"]
 shape = SubResource("GroundShape")
@@ -125,12 +131,24 @@ shape = SubResource("CircleShape2D")
 [node name="AttackPoint" type="Node2D" parent="Player"]
 position = Vector2(30, 0)
 
+[node name="AttackArea" type="Area2D" parent="Player"]
+collision_layer = 0
+collision_mask = 4
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Player/AttackArea"]
+shape = SubResource("AttackShape")
+
 [node name="Camera2D" type="Camera2D" parent="Player"]
 
 [node name="Enemy" type="CharacterBody2D" parent="."]
 position = Vector2(600, 500)
 collision_layer = 4
-collision_mask = 2
+collision_mask = 3
+script = ExtResource("3_enemy")
+move_speed = 80.0
+chase_distance = 250.0
+attack_distance = 60.0
+attack_range = 40.0
 
 [node name="EnemySprite" type="ColorRect" parent="Enemy"]
 offset_left = -15.0
@@ -140,6 +158,16 @@ offset_bottom = 15.0
 color = Color(1, 0.3, 0.3, 1)
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="Enemy"]
+shape = SubResource("CircleShape2D")
+
+[node name="AttackPoint" type="Node2D" parent="Enemy"]
+position = Vector2(30, 0)
+
+[node name="AttackArea" type="Area2D" parent="Enemy"]
+collision_layer = 0
+collision_mask = 2
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Enemy/AttackArea"]
 shape = SubResource("CircleShape2D")
 
 [node name="DebugLabel" type="Label" parent="."]
