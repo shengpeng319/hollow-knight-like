@@ -26,6 +26,11 @@ signal player_died
 @export_group("Animation Settings")
 @export var attack_animation_speed: float = 0.15
 @export var slash_arc_degrees: float = 120.0
+@export var slash_width: float = 8.0
+@export var slash_length: float = 40.0
+@export var slash_color: Color = Color(0.9, 0.95, 1.0, 1.0)
+@export var enable_particles: bool = true
+@export var particle_count: int = 8
 
 var _current_health: int
 var _current_jumps: int = 0
@@ -38,10 +43,15 @@ var _is_attacking: bool = false
 var _is_invincible: bool = false
 var _facing_right: bool = true
 var _start_position: Vector2
-var _current_attack_dir: int = 0  # 0=horizontal, 1=up, -1=down
+var _current_attack_dir: int = 0
 
-# Attack slash sprite
 var _slash_sprite: Sprite2D = null
+var _slash_particles: GPUParticles2D = null
+
+var _combo_count: int = 0
+var _combo_timer: float = 0.0
+var _combo_window: float = 0.5
+var _max_combo: int = 4
 
 @onready var _gravity: float = ProjectSettings.get_setting("physics/2d/default_gravity")
 @onready var _sprite: Node = $PlayerSprite if has_node("PlayerSprite") else null
@@ -58,6 +68,7 @@ func _physics_process(delta: float) -> void:
 		_process_dash(delta)
 		return
 	
+	_update_combo_timer(delta)
 	_apply_gravity(delta)
 	_handle_input()
 	_handle_jump()
@@ -65,6 +76,12 @@ func _physics_process(delta: float) -> void:
 	_handle_attack()
 	_move()
 	_flip_sprite()
+
+func _update_combo_timer(delta: float) -> void:
+	if _combo_timer > 0:
+		_combo_timer -= delta
+		if _combo_timer <= 0:
+			_combo_count = 0
 
 func _handle_input() -> void:
 	velocity.x = Input.get_axis("move_left", "move_right") * move_speed
@@ -123,85 +140,193 @@ func _perform_attack() -> void:
 	_can_attack = false
 	_is_attacking = true
 	
-	# Determine attack direction
+	_combo_count = (_combo_count + 1) % (_max_combo + 1)
+	_combo_timer = _combo_window
+	
 	_current_attack_dir = 0
 	if Input.is_action_pressed("move_up"):
 		_current_attack_dir = 1
 	elif Input.is_action_pressed("move_down"):
 		_current_attack_dir = -1
 	
-	print("Attack! Direction: ", _current_attack_dir, " facing: ", _facing_right)
+	print("Attack! Combo: ", _combo_count, " Direction: ", _current_attack_dir, " facing: ", _facing_right)
 	
-	# Player color flash
-	if _sprite:
-		_sprite.modulate = Color(1, 1, 1, 1)
-	
-	# Show slash animation
+	_modulate_for_combo()
 	_create_slash_effect()
-	
-	# Detect enemies
 	_detect_enemies()
 	
-	# Wait for animation
 	await get_tree().create_timer(attack_animation_speed).timeout
 	
-	# Reset sprite color
-	if _sprite:
-		_sprite.modulate = Color(0.2, 0.6, 1, 1)
+	_reset_sprite()
 	
-	# Wait for cooldown
 	await get_tree().create_timer(attack_cooldown).timeout
 	_can_attack = true
 	_is_attacking = false
 
+func _modulate_for_combo() -> void:
+	if not _sprite:
+		return
+	
+	var combo_colors = [
+		Color(1, 1, 1, 1),
+		Color(1, 0.9, 0.7, 1),
+		Color(1, 0.8, 0.5, 1),
+		Color(1, 0.6, 0.3, 1),
+		Color(1, 0.4, 0.2, 1)
+	]
+	_sprite.modulate = combo_colors[_combo_count]
+
+func _reset_sprite() -> void:
+	if _sprite:
+		_sprite.modulate = Color(0.2, 0.6, 1, 1)
+
 func _create_slash_effect() -> void:
-	# Remove old slash if exists
 	if _slash_sprite and is_instance_valid(_slash_sprite):
 		_slash_sprite.queue_free()
 		await get_tree().process_frame
 	
-	# Create slash as a rectangle
 	_slash_sprite = Sprite2D.new()
-	_slash_sprite.texture = _generate_slash_texture()
-	_slash_sprite.modulate = Color(1, 1, 1, 0.9)
+	_slash_sprite.texture = _generate_arc_slash_texture()
+	_slash_sprite.modulate = slash_color
 	
-	# Position and rotate based on attack direction
 	var offset = Vector2.ZERO
 	var rotation = 0.0
 	
 	match _current_attack_dir:
-		0:  # Horizontal slash - right or left
-			offset = Vector2(30 * (1 if _facing_right else -1), 0)
-			rotation = 0.0
-		1:  # Up slash
-			offset = Vector2(0, -30)
+		0:
+			offset = Vector2(25 * (1 if _facing_right else -1), 0)
+			rotation = 0.0 if _facing_right else deg_to_rad(180)
+		1:
+			offset = Vector2(0, -25)
 			rotation = deg_to_rad(-90)
-		-1:  # Down slash
-			offset = Vector2(0, 30)
+		-1:
+			offset = Vector2(0, 25)
 			rotation = deg_to_rad(90)
 	
 	_slash_sprite.position = offset
 	_slash_sprite.rotation = rotation
+	_slash_sprite.z_index = 10
 	add_child(_slash_sprite)
 	
-	# Animate fade out
-	var tween = create_tween()
-	tween.tween_property(_slash_sprite, "modulate:a", 0.0, attack_animation_speed)
-	tween.tween_callback(_clear_slash_sprite)
+	_animate_slash_arc()
+	_create_particles()
+	_trigger_screen_shake()
 
-func _generate_slash_texture() -> ImageTexture:
-	var width = 30
-	var height = 5
-	
-	var img = Image.create(width, height, false, Image.FORMAT_RGBA8)
+func _generate_arc_slash_texture() -> ImageTexture:
+	var img_width = int(slash_length * 1.5)
+	var img_height = int(slash_width * 3)
+	var img = Image.create(img_width, img_height, false, Image.FORMAT_RGBA8)
 	img.fill(Color(0, 0, 0, 0))
 	
-	# Draw white rectangle
-	for x in range(width):
-		for y in range(height):
-			img.set_pixel(x, y, Color(1, 1, 1, 0.9))
+	var center_y = img_height / 2.0
+	var thickness = slash_width
+	
+	for x in range(img_width):
+		var progress = float(x) / float(img_width)
+		var angle = -slash_arc_degrees / 2.0 + slash_arc_degrees * progress
+		var dist_from_center = abs(sin(progress * PI)) * thickness
+		
+		for y in range(img_height):
+			var dist = abs(y - center_y)
+			if dist < dist_from_center:
+				var alpha = 1.0 - (dist / dist_from_center)
+				alpha *= 1.0 - pow(abs(progress - 0.5) * 2, 2)
+				var col = slash_color
+				col.a = alpha * 0.9
+				img.set_pixel(x, y, col)
 	
 	return ImageTexture.create_from_image(img)
+
+func _animate_slash_arc() -> void:
+	var tween = create_tween()
+	var start_rot = _slash_sprite.rotation
+	var arc_amount = deg_to_rad(slash_arc_degrees * 0.3)
+	
+	match _current_attack_dir:
+		0:
+			tween.tween_property(_slash_sprite, "rotation", start_rot + arc_amount * (1 if _facing_right else -1), attack_animation_speed * 0.3)
+		1:
+			tween.tween_property(_slash_sprite, "rotation", start_rot + arc_amount, attack_animation_speed * 0.3)
+		-1:
+			tween.tween_property(_slash_sprite, "rotation", start_rot - arc_amount, attack_animation_speed * 0.3)
+	
+	tween.parallel().tween_property(_slash_sprite, "modulate:a", 0.0, attack_animation_speed)
+	tween.tween_callback(_clear_slash_sprite)
+
+func _create_particles() -> void:
+	if not enable_particles:
+		return
+	
+	if _slash_particles and is_instance_valid(_slash_particles):
+		_slash_particles.queue_free()
+	
+	_slash_particles = GPUParticles2D.new()
+	_slash_particles.amount = particle_count
+	_slash_particles.lifetime = 0.3
+	_slash_particles.explosiveness = 1.0
+	_slash_particles.one_shot = true
+	_slash_particles.emitting = true
+	
+	var particle_material = ParticleProcessMaterial.new()
+	particle_material.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	particle_material.emission_sphere_radius = 10.0
+	particle_material.direction = Vector3(1, 0, 0) if _current_attack_dir == 0 else Vector3(0, -1 if _current_attack_dir == 1 else 1, 0)
+	particle_material.spread = 60.0
+	particle_material.initial_velocity_min = 50.0
+	particle_material.initial_velocity_max = 150.0
+	particle_material.gravity = Vector3(0, 200, 0)
+	particle_material.scale_min = 2.0
+	particle_material.scale_max = 4.0
+	
+	var grad = Gradient.new()
+	grad.set_color(0, Color(1, 1, 1, 1))
+	grad.set_color(1, Color(0.8, 0.9, 1, 0))
+	particle_material.color_ramp = grad
+	
+	_slash_particles.process_material = particle_material
+	
+	var particle_texture = _create_particle_texture()
+	_slash_particles.texture = particle_texture
+	
+	match _current_attack_dir:
+		0:
+			_slash_particles.position = Vector2(30 * (1 if _facing_right else -1), 0)
+		1:
+			_slash_particles.position = Vector2(0, -30)
+		-1:
+			_slash_particles.position = Vector2(0, 30)
+	
+	_slash_particles.z_index = 9
+	add_child(_slash_particles)
+	
+	await get_tree().create_timer(0.35).timeout
+	if _slash_particles and is_instance_valid(_slash_particles):
+		_slash_particles.queue_free()
+		_slash_particles = null
+
+func _create_particle_texture() -> ImageTexture:
+	var size = 8
+	var img = Image.create(size, size, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	
+	for x in range(size):
+		for y in range(size):
+			var dist = Vector2(x - size/2.0, y - size/2.0).length()
+			if dist < size / 2.0:
+				var alpha = 1.0 - (dist / (size / 2.0))
+				img.set_pixel(x, y, Color(1, 1, 1, alpha))
+	
+	return ImageTexture.create_from_image(img)
+
+func _trigger_screen_shake() -> void:
+	var camera = get_viewport().get_camera_2d()
+	if camera:
+		var original_offset = camera.offset
+		var tween = create_tween()
+		for i in range(3):
+			var shake_offset = Vector2(randf_range(-3, 3), randf_range(-3, 3))
+			tween.tween_property(camera, "offset", original_offset + shake_offset, 0.03)
+		tween.tween_property(camera, "offset", original_offset, 0.05)
 
 func _clear_slash_sprite() -> void:
 	if _slash_sprite and is_instance_valid(_slash_sprite):
